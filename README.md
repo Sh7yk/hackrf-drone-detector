@@ -1,3 +1,6 @@
+<img width="1041" height="748" alt="image" src="https://github.com/user-attachments/assets/05041e27-3f28-4002-95d2-ae484ea7187c" />
+
+
 # hackrf-drone-detector
 The app is designed for drone signal detection, spectrum analysis, and experimental jamming using HackRF. False positives are possible, but the program attempts to analyze signals based on many drone-specific parameters.
 ## System Requirements
