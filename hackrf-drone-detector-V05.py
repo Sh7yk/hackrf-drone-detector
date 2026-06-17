@@ -30,11 +30,11 @@ except ImportError:
 # --------------------- Constants ---------------------
 DEFAULT_FREQUENCIES = [433e6, 868e6, 915e6, 2400e6, 5800e6]
 DEFAULT_BANDWIDTHS = {
-    433e6: 8e6,
-    868e6: 8e6,
-    915e6: 8e6,
-    2400e6: 8e6,
-    5800e6: 10e6,
+    433e6: 1e6,
+    868e6: 1e6,
+    915e6: 1e6,
+    2400e6: 20e6,
+    5800e6: 8e6,
 }
 DEFAULT_THRESHOLDS = {433e6: -25, 868e6: -22, 915e6: -20, 2400e6: -18, 5800e6: -20}
 HISTORY_LEN = 200
@@ -515,7 +515,7 @@ class DroneDetectorGUI:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Drone Detector v0.5")
+        self.root.title("Drone Detector v6.0")
         self.root.minsize(1200, 750)
 
         self.core: DroneCore | None = None
@@ -918,37 +918,57 @@ class DroneDetectorGUI:
                 self._log_append(f"Threshold for {freq/1e6:.3f} MHz changed to {new_thr:.1f} dB", tag="info")
         self._drag_data = {'line': None, 'freq': None, 'y0': None}
 
-    # ---------- Settings Tab ----------
+    # ---------- Settings Tab with Scrollbar ----------
     def _build_settings_tab(self, parent):
+        # Очищаем предыдущее содержимое вкладки
         for widget in parent.winfo_children():
             widget.destroy()
 
-        wrapper = tk.Frame(parent, padx=20, pady=20)
-        wrapper.pack(fill=tk.BOTH, expand=True)
+        # Создаём Canvas и вертикальный скроллбар
+        canvas = tk.Canvas(parent, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
 
-        tk.Label(wrapper, text="Frequencies, thresholds and bandwidths", font=("Arial", 12, "bold")).grid(
+        # Упаковываем скроллбар и холст
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Внутренний фрейм, который будет содержать все виджеты
+        inner = tk.Frame(canvas)
+        canvas.create_window((0, 0), window=inner, anchor='nw')
+
+        # Функция обновления области прокрутки
+        def _on_canvas_configure(event):
+            # Обновляем ширину внутреннего фрейма, чтобы он соответствовал ширине холста
+            canvas.itemconfig(canvas.find_withtag("all")[0], width=event.width)
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        # ---- ВСЕ ВИДЖЕТЫ ТЕПЕРЬ СОЗДАЮТСЯ ВНУТРИ `inner` ----
+        # Заголовок
+        tk.Label(inner, text="Frequencies, thresholds and bandwidths", font=("Arial", 12, "bold")).grid(
             row=0, column=0, columnspan=7, sticky=tk.W, pady=(0, 12))
 
         headers = ["Frequency (Hz)", "On", "Threshold (dB)", "BW, MHz", ""]
         for col, h in enumerate(headers):
-            tk.Label(wrapper, text=h, font=("Arial", 9, "bold"), fg="#555").grid(
+            tk.Label(inner, text=h, font=("Arial", 9, "bold"), fg="#555").grid(
                 row=1, column=col, padx=8, pady=2, sticky=tk.W)
 
         for i, fvar in enumerate(self._freq_vars):
             row = i + 2
-            tk.Entry(wrapper, textvariable=fvar, width=14).grid(
+            tk.Entry(inner, textvariable=fvar, width=14).grid(
                 row=row, column=0, padx=8, pady=3)
-            tk.Checkbutton(wrapper, variable=self._freq_enabled[i]).grid(
+            tk.Checkbutton(inner, variable=self._freq_enabled[i]).grid(
                 row=row, column=1, padx=8)
-            tk.Entry(wrapper, textvariable=self._thr_vars[i], width=8).grid(
+            tk.Entry(inner, textvariable=self._thr_vars[i], width=8).grid(
                 row=row, column=2, padx=8)
-            bw_entry = tk.Entry(wrapper, textvariable=self._bw_vars[i], width=8)
+            bw_entry = tk.Entry(inner, textvariable=self._bw_vars[i], width=8)
             bw_entry.grid(row=row, column=3, padx=8)
-            tk.Button(wrapper, text="✕", command=lambda idx=i: self._remove_frequency(idx),
+            tk.Button(inner, text="✕", command=lambda idx=i: self._remove_frequency(idx),
                       relief=tk.FLAT, fg="#c0392b").grid(
                 row=row, column=4, padx=4, pady=3)
 
-        add_frame = tk.Frame(wrapper)
+        add_frame = tk.Frame(inner)
         add_frame.grid(row=len(self._freq_vars)+2, column=0, columnspan=7,
                        pady=(16, 4), sticky=tk.W)
         self._new_freq_var = tk.StringVar(value="")
@@ -963,11 +983,11 @@ class DroneDetectorGUI:
         tk.Button(add_frame, text="+ Add", command=self._add_frequency).pack(side=tk.LEFT, padx=8)
 
         row_analysis = len(self._freq_vars) + 3
-        sep = ttk.Separator(wrapper, orient=tk.HORIZONTAL)
+        sep = ttk.Separator(inner, orient=tk.HORIZONTAL)
         sep.grid(row=row_analysis, column=0, columnspan=7, sticky=tk.EW, pady=12)
         row_analysis += 1
 
-        tk.Label(wrapper, text="Signal Analysis Parameters", font=("Arial", 11, "bold")).grid(
+        tk.Label(inner, text="Signal Analysis Parameters", font=("Arial", 11, "bold")).grid(
             row=row_analysis, column=0, columnspan=7, sticky=tk.W, pady=(0, 8))
         row_analysis += 1
 
@@ -988,118 +1008,122 @@ class DroneDetectorGUI:
             ("trend_window", "Trend window (points)", "15"),
         ]):
             r = row_analysis + idx
-            tk.Label(wrapper, text=label, font=("Arial", 9)).grid(
+            tk.Label(inner, text=label, font=("Arial", 9)).grid(
                 row=r, column=0, sticky=tk.W, padx=8)
-            tk.Entry(wrapper, textvariable=self._analysis_vars[name], width=8).grid(
+            tk.Entry(inner, textvariable=self._analysis_vars[name], width=8).grid(
                 row=r, column=1, padx=8, sticky=tk.W)
-            tk.Label(wrapper, text=analysis_descs.get(name, ""), font=("Arial", 8), fg="#666").grid(
+            tk.Label(inner, text=analysis_descs.get(name, ""), font=("Arial", 8), fg="#666").grid(
                 row=r, column=2, columnspan=5, sticky=tk.W, padx=8)
 
         row_adapt = row_analysis + len(analysis_descs) + 1
-        sep = ttk.Separator(wrapper, orient=tk.HORIZONTAL)
+        sep = ttk.Separator(inner, orient=tk.HORIZONTAL)
         sep.grid(row=row_adapt, column=0, columnspan=7, sticky=tk.EW, pady=8)
         row_adapt += 1
 
-        tk.Checkbutton(wrapper, text="Adaptive threshold", variable=self._adaptive_enabled_var).grid(
+        tk.Checkbutton(inner, text="Adaptive threshold", variable=self._adaptive_enabled_var).grid(
             row=row_adapt, column=0, sticky=tk.W, padx=8)
-        tk.Label(wrapper, text="Offset (dB):").grid(
+        tk.Label(inner, text="Offset (dB):").grid(
             row=row_adapt, column=1, sticky=tk.W, padx=8)
-        tk.Entry(wrapper, textvariable=self._adaptive_offset_var, width=8).grid(
+        tk.Entry(inner, textvariable=self._adaptive_offset_var, width=8).grid(
             row=row_adapt, column=2, sticky=tk.W, padx=8)
-        tk.Label(wrapper, text="Threshold = noise median + offset", font=("Arial", 8), fg="#666").grid(
+        tk.Label(inner, text="Threshold = noise median + offset", font=("Arial", 8), fg="#666").grid(
             row=row_adapt, column=3, columnspan=4, sticky=tk.W, padx=8)
 
         row_mode = row_adapt + 1
-        tk.Label(wrapper, text="Scan mode:", font=("Arial", 9)).grid(
+        tk.Label(inner, text="Scan mode:", font=("Arial", 9)).grid(
             row=row_mode, column=0, sticky=tk.W, padx=8)
-        self._mode_combo = ttk.Combobox(wrapper, values=["normal", "tracking_timeout"], state="readonly", width=15)
+        self._mode_combo = ttk.Combobox(inner, values=["normal", "tracking_timeout"], state="readonly", width=15)
         self._mode_combo.set("normal")
         self._mode_combo.grid(row=row_mode, column=1, padx=8, sticky=tk.W)
-        tk.Label(wrapper, text="Tracking timeout (s):").grid(
+        tk.Label(inner, text="Tracking timeout (s):").grid(
             row=row_mode, column=2, sticky=tk.W, padx=8)
-        tk.Entry(wrapper, textvariable=self._tracking_timeout_var, width=8).grid(
+        tk.Entry(inner, textvariable=self._tracking_timeout_var, width=8).grid(
             row=row_mode, column=3, sticky=tk.W, padx=8)
 
         row_sound = row_mode + 1
-        tk.Label(wrapper, text="Sound volume:", font=("Arial", 9)).grid(
+        tk.Label(inner, text="Sound volume:", font=("Arial", 9)).grid(
             row=row_sound, column=0, sticky=tk.W, padx=8)
-        self._volume_scale = Scale(wrapper, from_=0.0, to=1.0, resolution=0.05,
+        self._volume_scale = Scale(inner, from_=0.0, to=1.0, resolution=0.05,
                                     orient=tk.HORIZONTAL, length=150,
                                     variable=self._volume_value)
         self._volume_scale.grid(row=row_sound, column=1, columnspan=2, sticky=tk.W, padx=8)
         self._volume_scale.bind("<ButtonRelease-1>", self._on_volume_change)
 
         row_jam = row_sound + 1
-        sep = ttk.Separator(wrapper, orient=tk.HORIZONTAL)
+        sep = ttk.Separator(inner, orient=tk.HORIZONTAL)
         sep.grid(row=row_jam, column=0, columnspan=7, sticky=tk.EW, pady=8)
         row_jam += 1
 
-        tk.Label(wrapper, text="Jamming (experimental!)", font=("Arial", 11, "bold")).grid(
+        tk.Label(inner, text="Jamming (experimental!)", font=("Arial", 11, "bold")).grid(
             row=row_jam, column=0, columnspan=7, sticky=tk.W, pady=(0, 8))
         row_jam += 1
 
-        tk.Checkbutton(wrapper, text="Enable jamming", variable=self._jamming_enabled_var).grid(
+        tk.Checkbutton(inner, text="Enable jamming", variable=self._jamming_enabled_var).grid(
             row=row_jam, column=0, columnspan=2, sticky=tk.W, padx=8)
 
-        tk.Label(wrapper, text="Power (gain 0-40 dB):").grid(
+        tk.Label(inner, text="Power (gain 0-40 dB):").grid(
             row=row_jam, column=2, sticky=tk.W, padx=8)
-        tk.Entry(wrapper, textvariable=self._jamming_power_var, width=8).grid(
+        tk.Entry(inner, textvariable=self._jamming_power_var, width=8).grid(
             row=row_jam, column=3, sticky=tk.W, padx=8)
 
         row_jam += 1
-        tk.Label(wrapper, text="Burst duration (s):").grid(
+        tk.Label(inner, text="Burst duration (s):").grid(
             row=row_jam, column=0, sticky=tk.W, padx=8)
-        tk.Entry(wrapper, textvariable=self._jamming_duration_var, width=8).grid(
+        tk.Entry(inner, textvariable=self._jamming_duration_var, width=8).grid(
             row=row_jam, column=1, sticky=tk.W, padx=8)
-        tk.Label(wrapper, text="Check interval (s):").grid(
+        tk.Label(inner, text="Check interval (s):").grid(
             row=row_jam, column=2, sticky=tk.W, padx=8)
-        tk.Entry(wrapper, textvariable=self._jamming_check_interval_var, width=8).grid(
+        tk.Entry(inner, textvariable=self._jamming_check_interval_var, width=8).grid(
             row=row_jam, column=3, sticky=tk.W, padx=8)
-        tk.Label(wrapper, text="(used internally)", font=("Arial", 8), fg="#666").grid(
+        tk.Label(inner, text="(used internally)", font=("Arial", 8), fg="#666").grid(
             row=row_jam, column=4, columnspan=3, sticky=tk.W, padx=8)
 
         row_email = row_jam + 2
-        sep = ttk.Separator(wrapper, orient=tk.HORIZONTAL)
+        sep = ttk.Separator(inner, orient=tk.HORIZONTAL)
         sep.grid(row=row_email, column=0, columnspan=7, sticky=tk.EW, pady=8)
         row_email += 1
 
-        tk.Checkbutton(wrapper, text="Email notifications", variable=self._email_enabled_var).grid(
+        tk.Checkbutton(inner, text="Email notifications", variable=self._email_enabled_var).grid(
             row=row_email, column=0, columnspan=2, sticky=tk.W, padx=8)
 
         email_labels = ["From:", "Password:", "To:", "SMTP server:port"]
         email_keys = ["email_from", "email_password", "email_to", "email_smtp"]
         for i, (label, key) in enumerate(zip(email_labels, email_keys)):
             r = row_email + i + 1
-            tk.Label(wrapper, text=label, font=("Arial", 9)).grid(
+            tk.Label(inner, text=label, font=("Arial", 9)).grid(
                 row=r, column=0, sticky=tk.W, padx=8)
-            tk.Entry(wrapper, textvariable=self._email_vars[key], width=30).grid(
+            tk.Entry(inner, textvariable=self._email_vars[key], width=30).grid(
                 row=r, column=1, columnspan=4, sticky=tk.W, padx=8)
 
         row_tg = row_email + len(email_labels) + 2
-        tk.Checkbutton(wrapper, text="Telegram notifications", variable=self._telegram_enabled_var).grid(
+        tk.Checkbutton(inner, text="Telegram notifications", variable=self._telegram_enabled_var).grid(
             row=row_tg, column=0, columnspan=2, sticky=tk.W, padx=8)
 
         tg_labels = ["Bot Token:", "Chat ID:"]
         tg_keys = ["telegram_token", "telegram_chat_id"]
         for i, (label, key) in enumerate(zip(tg_labels, tg_keys)):
             r = row_tg + i + 1
-            tk.Label(wrapper, text=label, font=("Arial", 9)).grid(
+            tk.Label(inner, text=label, font=("Arial", 9)).grid(
                 row=r, column=0, sticky=tk.W, padx=8)
-            tk.Entry(wrapper, textvariable=self._telegram_vars[key], width=30).grid(
+            tk.Entry(inner, textvariable=self._telegram_vars[key], width=30).grid(
                 row=r, column=1, columnspan=4, sticky=tk.W, padx=8)
 
         row_cooldown = row_tg + len(tg_labels) + 2
-        tk.Label(wrapper, text="Alert cooldown (s):").grid(
+        tk.Label(inner, text="Alert cooldown (s):").grid(
             row=row_cooldown, column=0, sticky=tk.W, padx=8)
-        tk.Entry(wrapper, textvariable=self._cooldown_var, width=8).grid(
+        tk.Entry(inner, textvariable=self._cooldown_var, width=8).grid(
             row=row_cooldown, column=1, padx=8, sticky=tk.W)
 
         row_apply = row_cooldown + 2
-        tk.Button(wrapper, text="Apply settings",
+        tk.Button(inner, text="Apply settings",
                   command=self._apply_settings,
                   bg="#2980b9", fg="white", relief=tk.FLAT,
                   font=("Arial", 10, "bold"), padx=12, pady=4).grid(
             row=row_apply, column=0, columnspan=7, pady=16, sticky=tk.W)
+
+        # Обновляем область прокрутки после создания всех виджетов
+        inner.update_idletasks()
+        canvas.configure(scrollregion=canvas.bbox("all"))
 
     def _on_volume_change(self, event):
         if self.core:
