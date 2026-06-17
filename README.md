@@ -17,8 +17,8 @@ ___
 ```bash
 sudo apt update
 sudo apt install -y python3 python3-pip python3-tk python3-dev
-sudo apt install -y hackrf libhackrf-dev hackrf-tools
-sudo apt install -y portaudio19-dev # for pygame (optional)
+sudo apt install -y hackrf libhackrf-dev
+sudo apt install -y portaudio19-dev
 ```
 ### Fedora
 ```bash
