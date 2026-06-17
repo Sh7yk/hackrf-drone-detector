@@ -34,7 +34,7 @@ DEFAULT_BANDWIDTHS = {
     868e6: 8e6,
     915e6: 8e6,
     2400e6: 8e6,
-    5800e6: 10e6,
+    5800e6: 20e6,
 }
 DEFAULT_THRESHOLDS = {433e6: -25, 868e6: -22, 915e6: -20, 2400e6: -18, 5800e6: -20}
 HISTORY_LEN = 200
@@ -248,21 +248,18 @@ class DroneCore:
         except Exception:
             return -65.0
 
-    # ---------- Генерация шума для глушения (исправлено) ----------
+    # ---------- Генерация шума для глушения ----------
     def _generate_noise_file(self, sample_rate):
         """Создаёт файл noise.iq длительностью 2 секунды с белым шумом (int16 I/Q)."""
         if self._noise_generated and self._current_noise_sr == sample_rate:
-            # Проверяем, что файл существует и имеет правильный размер
             expected_size = sample_rate * 2 * 2 * 2  # 2 сек * 2 байта * 2 (I/Q)
             if os.path.exists(self.noise_file_path) and os.path.getsize(self.noise_file_path) == expected_size:
                 return
         try:
             duration = 2  # секунды
             num_samples = int(sample_rate * duration)
-            # Генерируем случайные значения для I и Q
             noise_i = np.random.randint(-32767, 32767, size=num_samples, dtype=np.int16)
             noise_q = np.random.randint(-32767, 32767, size=num_samples, dtype=np.int16)
-            # Перемежаем I и Q
             noise = np.empty((num_samples * 2,), dtype=np.int16)
             noise[0::2] = noise_i
             noise[1::2] = noise_q
@@ -275,23 +272,21 @@ class DroneCore:
 
     def start_jamming(self, freq):
         """Запускает передачу шума на указанной частоте."""
-        self.stop_jamming()  # Останавливаем предыдущую передачу
+        self.stop_jamming()
         sample_rate = int(self.bandwidths.get(freq, 8e6))
         self._generate_noise_file(sample_rate)
         try:
             cmd = [
                 "hackrf_transfer", "-t", self.noise_file_path,
-                "-R",                     # повторять файл бесконечно
+                "-R",
                 "-f", str(int(freq)),
                 "-s", str(sample_rate),
-                "-a", "1",                # включить усилитель TX
+                "-a", "1",
                 "-g", str(self.jamming_power),
             ]
             print(f"[JAM] Запуск: {' '.join(cmd)}")
             self.jamming_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            # Даём процессу время на инициализацию
             time.sleep(0.5)
-            # Проверяем, не завершился ли процесс сразу
             if self.jamming_process.poll() is not None:
                 stdout, stderr = self.jamming_process.communicate()
                 print(f"[JAM] Процесс завершился сразу. stderr: {stderr.decode()}")
@@ -469,9 +464,7 @@ class DroneCore:
                         self.jamming_prev_rssi = rssi
                         return {"rssi": rssi, "movement": mov, "lost": False, "freq": freq, "jamming": True}
                     else:
-                        # Не удалось запустить глушение – продолжаем обычное слежение
                         pass
-                # Если глушение не запустилось или сигнал слабее – обычное слежение
                 lost = rssi < thr - 10
                 if self.scan_mode == 'tracking_timeout':
                     if time.time() - self.track_start_time > self.tracking_timeout:
@@ -479,29 +472,23 @@ class DroneCore:
                 self.play_tracking_beep(rssi)
                 return {"rssi": rssi, "movement": mov, "lost": lost, "freq": freq, "jamming": False}
             else:
-                # Уже активно глушение
                 if time.time() - self.jamming_start_time >= self.jamming_duration:
-                    # Останавливаем передачу
                     self.stop_jamming()
-                    # Измеряем RSSI после глушения
                     rssi_after = self.get_rssi(freq)
                     self.history[freq].append(rssi_after)
                     self.track_rssi_history.append(rssi_after)
                     mov = self.analyze_movement(freq)
                     if self.jamming_prev_rssi is not None and rssi_after < self.jamming_prev_rssi - 2:
-                        # Сигнал ослаб – дрон, вероятно, улетел
                         self.tracking_mode = False
                         self.tracked_frequency = None
                         self.track_rssi_history.clear()
                         self.jamming_prev_rssi = None
                         return {"rssi": rssi_after, "movement": mov, "lost": True, "freq": freq, "jamming": False}
                     else:
-                        # Сигнал не ослаб – продолжаем глушить
                         self.start_jamming(freq)
                         self.jamming_prev_rssi = rssi_after
                         return {"rssi": rssi_after, "movement": mov, "lost": False, "freq": freq, "jamming": True}
                 else:
-                    # Время глушения ещё не вышло
                     return {"rssi": self.jamming_prev_rssi, "movement": None, "lost": False,
                             "freq": freq, "jamming": True}
 
@@ -528,7 +515,7 @@ class DroneDetectorGUI:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Drone Detector v0.5")
+        self.root.title("Drone Detector v6.0")
         self.root.minsize(1200, 750)
 
         self.core: DroneCore | None = None
@@ -931,37 +918,55 @@ class DroneDetectorGUI:
                 self._log_append(f"Порог для {freq/1e6:.3f} МГц изменён на {new_thr:.1f} дБ", tag="info")
         self._drag_data = {'line': None, 'freq': None, 'y0': None}
 
-    # ---------- Настройки ----------
+    # ---------- Настройки (с прокруткой) ----------
     def _build_settings_tab(self, parent):
+        # Очищаем предыдущее содержимое вкладки
         for widget in parent.winfo_children():
             widget.destroy()
 
-        wrapper = tk.Frame(parent, padx=20, pady=20)
-        wrapper.pack(fill=tk.BOTH, expand=True)
+        # Создаём Canvas и вертикальный скроллбар
+        canvas = tk.Canvas(parent, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
 
-        tk.Label(wrapper, text="Частоты, пороги и полосы пропускания", font=("Arial", 12, "bold")).grid(
+        # Упаковываем скроллбар и холст
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Внутренний фрейм, который будет содержать все виджеты
+        inner = tk.Frame(canvas)
+        canvas.create_window((0, 0), window=inner, anchor='nw')
+
+        # Функция обновления области прокрутки
+        def _on_canvas_configure(event):
+            canvas.itemconfig(canvas.find_withtag("all")[0], width=event.width)
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        # ---- ВСЕ ВИДЖЕТЫ ТЕПЕРЬ СОЗДАЮТСЯ ВНУТРИ `inner` ----
+        tk.Label(inner, text="Частоты, пороги и полосы пропускания", font=("Arial", 12, "bold")).grid(
             row=0, column=0, columnspan=7, sticky=tk.W, pady=(0, 12))
 
         headers = ["Частота (Гц)", "Вкл", "Порог (dB)", "BW, МГц", ""]
         for col, h in enumerate(headers):
-            tk.Label(wrapper, text=h, font=("Arial", 9, "bold"), fg="#555").grid(
+            tk.Label(inner, text=h, font=("Arial", 9, "bold"), fg="#555").grid(
                 row=1, column=col, padx=8, pady=2, sticky=tk.W)
 
         for i, fvar in enumerate(self._freq_vars):
             row = i + 2
-            tk.Entry(wrapper, textvariable=fvar, width=14).grid(
+            tk.Entry(inner, textvariable=fvar, width=14).grid(
                 row=row, column=0, padx=8, pady=3)
-            tk.Checkbutton(wrapper, variable=self._freq_enabled[i]).grid(
+            tk.Checkbutton(inner, variable=self._freq_enabled[i]).grid(
                 row=row, column=1, padx=8)
-            tk.Entry(wrapper, textvariable=self._thr_vars[i], width=8).grid(
+            tk.Entry(inner, textvariable=self._thr_vars[i], width=8).grid(
                 row=row, column=2, padx=8)
-            bw_entry = tk.Entry(wrapper, textvariable=self._bw_vars[i], width=8)
+            bw_entry = tk.Entry(inner, textvariable=self._bw_vars[i], width=8)
             bw_entry.grid(row=row, column=3, padx=8)
-            tk.Button(wrapper, text="✕", command=lambda idx=i: self._remove_frequency(idx),
+            tk.Button(inner, text="✕", command=lambda idx=i: self._remove_frequency(idx),
                       relief=tk.FLAT, fg="#c0392b").grid(
                 row=row, column=4, padx=4, pady=3)
 
-        add_frame = tk.Frame(wrapper)
+        add_frame = tk.Frame(inner)
         add_frame.grid(row=len(self._freq_vars)+2, column=0, columnspan=7,
                        pady=(16, 4), sticky=tk.W)
         self._new_freq_var = tk.StringVar(value="")
@@ -976,11 +981,11 @@ class DroneDetectorGUI:
         tk.Button(add_frame, text="+ Добавить", command=self._add_frequency).pack(side=tk.LEFT, padx=8)
 
         row_analysis = len(self._freq_vars) + 3
-        sep = ttk.Separator(wrapper, orient=tk.HORIZONTAL)
+        sep = ttk.Separator(inner, orient=tk.HORIZONTAL)
         sep.grid(row=row_analysis, column=0, columnspan=7, sticky=tk.EW, pady=12)
         row_analysis += 1
 
-        tk.Label(wrapper, text="Параметры анализа сигнала", font=("Arial", 11, "bold")).grid(
+        tk.Label(inner, text="Параметры анализа сигнала", font=("Arial", 11, "bold")).grid(
             row=row_analysis, column=0, columnspan=7, sticky=tk.W, pady=(0, 8))
         row_analysis += 1
 
@@ -1001,118 +1006,122 @@ class DroneDetectorGUI:
             ("trend_window", "Окно для тренда (точек)", "15"),
         ]):
             r = row_analysis + idx
-            tk.Label(wrapper, text=label, font=("Arial", 9)).grid(
+            tk.Label(inner, text=label, font=("Arial", 9)).grid(
                 row=r, column=0, sticky=tk.W, padx=8)
-            tk.Entry(wrapper, textvariable=self._analysis_vars[name], width=8).grid(
+            tk.Entry(inner, textvariable=self._analysis_vars[name], width=8).grid(
                 row=r, column=1, padx=8, sticky=tk.W)
-            tk.Label(wrapper, text=analysis_descs.get(name, ""), font=("Arial", 8), fg="#666").grid(
+            tk.Label(inner, text=analysis_descs.get(name, ""), font=("Arial", 8), fg="#666").grid(
                 row=r, column=2, columnspan=5, sticky=tk.W, padx=8)
 
         row_adapt = row_analysis + len(analysis_descs) + 1
-        sep = ttk.Separator(wrapper, orient=tk.HORIZONTAL)
+        sep = ttk.Separator(inner, orient=tk.HORIZONTAL)
         sep.grid(row=row_adapt, column=0, columnspan=7, sticky=tk.EW, pady=8)
         row_adapt += 1
 
-        tk.Checkbutton(wrapper, text="Адаптивный порог", variable=self._adaptive_enabled_var).grid(
+        tk.Checkbutton(inner, text="Адаптивный порог", variable=self._adaptive_enabled_var).grid(
             row=row_adapt, column=0, sticky=tk.W, padx=8)
-        tk.Label(wrapper, text="Смещение (dB):").grid(
+        tk.Label(inner, text="Смещение (dB):").grid(
             row=row_adapt, column=1, sticky=tk.W, padx=8)
-        tk.Entry(wrapper, textvariable=self._adaptive_offset_var, width=8).grid(
+        tk.Entry(inner, textvariable=self._adaptive_offset_var, width=8).grid(
             row=row_adapt, column=2, sticky=tk.W, padx=8)
-        tk.Label(wrapper, text="Порог = медиана шума + смещение", font=("Arial", 8), fg="#666").grid(
+        tk.Label(inner, text="Порог = медиана шума + смещение", font=("Arial", 8), fg="#666").grid(
             row=row_adapt, column=3, columnspan=4, sticky=tk.W, padx=8)
 
         row_mode = row_adapt + 1
-        tk.Label(wrapper, text="Режим сканирования:", font=("Arial", 9)).grid(
+        tk.Label(inner, text="Режим сканирования:", font=("Arial", 9)).grid(
             row=row_mode, column=0, sticky=tk.W, padx=8)
-        self._mode_combo = ttk.Combobox(wrapper, values=["normal", "tracking_timeout"], state="readonly", width=15)
+        self._mode_combo = ttk.Combobox(inner, values=["normal", "tracking_timeout"], state="readonly", width=15)
         self._mode_combo.set("normal")
         self._mode_combo.grid(row=row_mode, column=1, padx=8, sticky=tk.W)
-        tk.Label(wrapper, text="Таймаут слежения (с):").grid(
+        tk.Label(inner, text="Таймаут слежения (с):").grid(
             row=row_mode, column=2, sticky=tk.W, padx=8)
-        tk.Entry(wrapper, textvariable=self._tracking_timeout_var, width=8).grid(
+        tk.Entry(inner, textvariable=self._tracking_timeout_var, width=8).grid(
             row=row_mode, column=3, sticky=tk.W, padx=8)
 
         row_sound = row_mode + 1
-        tk.Label(wrapper, text="Громкость звука:", font=("Arial", 9)).grid(
+        tk.Label(inner, text="Громкость звука:", font=("Arial", 9)).grid(
             row=row_sound, column=0, sticky=tk.W, padx=8)
-        self._volume_scale = Scale(wrapper, from_=0.0, to=1.0, resolution=0.05,
+        self._volume_scale = Scale(inner, from_=0.0, to=1.0, resolution=0.05,
                                     orient=tk.HORIZONTAL, length=150,
                                     variable=self._volume_value)
         self._volume_scale.grid(row=row_sound, column=1, columnspan=2, sticky=tk.W, padx=8)
         self._volume_scale.bind("<ButtonRelease-1>", self._on_volume_change)
 
         row_jam = row_sound + 1
-        sep = ttk.Separator(wrapper, orient=tk.HORIZONTAL)
+        sep = ttk.Separator(inner, orient=tk.HORIZONTAL)
         sep.grid(row=row_jam, column=0, columnspan=7, sticky=tk.EW, pady=8)
         row_jam += 1
 
-        tk.Label(wrapper, text="Глушение (экспериментально!)", font=("Arial", 11, "bold")).grid(
+        tk.Label(inner, text="Глушение (экспериментально!)", font=("Arial", 11, "bold")).grid(
             row=row_jam, column=0, columnspan=7, sticky=tk.W, pady=(0, 8))
         row_jam += 1
 
-        tk.Checkbutton(wrapper, text="Включить глушение", variable=self._jamming_enabled_var).grid(
+        tk.Checkbutton(inner, text="Включить глушение", variable=self._jamming_enabled_var).grid(
             row=row_jam, column=0, columnspan=2, sticky=tk.W, padx=8)
 
-        tk.Label(wrapper, text="Мощность (усиление 0-40 дБ):").grid(
+        tk.Label(inner, text="Мощность (усиление 0-40 дБ):").grid(
             row=row_jam, column=2, sticky=tk.W, padx=8)
-        tk.Entry(wrapper, textvariable=self._jamming_power_var, width=8).grid(
+        tk.Entry(inner, textvariable=self._jamming_power_var, width=8).grid(
             row=row_jam, column=3, sticky=tk.W, padx=8)
 
         row_jam += 1
-        tk.Label(wrapper, text="Длительность посылки (с):").grid(
+        tk.Label(inner, text="Длительность посылки (с):").grid(
             row=row_jam, column=0, sticky=tk.W, padx=8)
-        tk.Entry(wrapper, textvariable=self._jamming_duration_var, width=8).grid(
+        tk.Entry(inner, textvariable=self._jamming_duration_var, width=8).grid(
             row=row_jam, column=1, sticky=tk.W, padx=8)
-        tk.Label(wrapper, text="Интервал проверки (с):").grid(
+        tk.Label(inner, text="Интервал проверки (с):").grid(
             row=row_jam, column=2, sticky=tk.W, padx=8)
-        tk.Entry(wrapper, textvariable=self._jamming_check_interval_var, width=8).grid(
+        tk.Entry(inner, textvariable=self._jamming_check_interval_var, width=8).grid(
             row=row_jam, column=3, sticky=tk.W, padx=8)
-        tk.Label(wrapper, text="(используется внутренне)", font=("Arial", 8), fg="#666").grid(
+        tk.Label(inner, text="(используется внутренне)", font=("Arial", 8), fg="#666").grid(
             row=row_jam, column=4, columnspan=3, sticky=tk.W, padx=8)
 
         row_email = row_jam + 2
-        sep = ttk.Separator(wrapper, orient=tk.HORIZONTAL)
+        sep = ttk.Separator(inner, orient=tk.HORIZONTAL)
         sep.grid(row=row_email, column=0, columnspan=7, sticky=tk.EW, pady=8)
         row_email += 1
 
-        tk.Checkbutton(wrapper, text="Уведомления по Email", variable=self._email_enabled_var).grid(
+        tk.Checkbutton(inner, text="Уведомления по Email", variable=self._email_enabled_var).grid(
             row=row_email, column=0, columnspan=2, sticky=tk.W, padx=8)
 
         email_labels = ["От кого:", "Пароль:", "Кому:", "SMTP сервер:порт"]
         email_keys = ["email_from", "email_password", "email_to", "email_smtp"]
         for i, (label, key) in enumerate(zip(email_labels, email_keys)):
             r = row_email + i + 1
-            tk.Label(wrapper, text=label, font=("Arial", 9)).grid(
+            tk.Label(inner, text=label, font=("Arial", 9)).grid(
                 row=r, column=0, sticky=tk.W, padx=8)
-            tk.Entry(wrapper, textvariable=self._email_vars[key], width=30).grid(
+            tk.Entry(inner, textvariable=self._email_vars[key], width=30).grid(
                 row=r, column=1, columnspan=4, sticky=tk.W, padx=8)
 
         row_tg = row_email + len(email_labels) + 2
-        tk.Checkbutton(wrapper, text="Уведомления в Telegram", variable=self._telegram_enabled_var).grid(
+        tk.Checkbutton(inner, text="Уведомления в Telegram", variable=self._telegram_enabled_var).grid(
             row=row_tg, column=0, columnspan=2, sticky=tk.W, padx=8)
 
         tg_labels = ["Bot Token:", "Chat ID:"]
         tg_keys = ["telegram_token", "telegram_chat_id"]
         for i, (label, key) in enumerate(zip(tg_labels, tg_keys)):
             r = row_tg + i + 1
-            tk.Label(wrapper, text=label, font=("Arial", 9)).grid(
+            tk.Label(inner, text=label, font=("Arial", 9)).grid(
                 row=r, column=0, sticky=tk.W, padx=8)
-            tk.Entry(wrapper, textvariable=self._telegram_vars[key], width=30).grid(
+            tk.Entry(inner, textvariable=self._telegram_vars[key], width=30).grid(
                 row=r, column=1, columnspan=4, sticky=tk.W, padx=8)
 
         row_cooldown = row_tg + len(tg_labels) + 2
-        tk.Label(wrapper, text="Cooldown тревоги (с):").grid(
+        tk.Label(inner, text="Cooldown тревоги (с):").grid(
             row=row_cooldown, column=0, sticky=tk.W, padx=8)
-        tk.Entry(wrapper, textvariable=self._cooldown_var, width=8).grid(
+        tk.Entry(inner, textvariable=self._cooldown_var, width=8).grid(
             row=row_cooldown, column=1, padx=8, sticky=tk.W)
 
         row_apply = row_cooldown + 2
-        tk.Button(wrapper, text="Применить настройки",
+        tk.Button(inner, text="Применить настройки",
                   command=self._apply_settings,
                   bg="#2980b9", fg="white", relief=tk.FLAT,
                   font=("Arial", 10, "bold"), padx=12, pady=4).grid(
             row=row_apply, column=0, columnspan=7, pady=16, sticky=tk.W)
+
+        # Обновляем область прокрутки после создания всех виджетов
+        inner.update_idletasks()
+        canvas.configure(scrollregion=canvas.bbox("all"))
 
     def _on_volume_change(self, event):
         if self.core:
