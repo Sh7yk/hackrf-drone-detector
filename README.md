@@ -68,3 +68,6 @@ python3 hackrf-drone-detector.py
 ```
 
 <img width="1413" height="1160" alt="image" src="https://github.com/user-attachments/assets/7527da65-356d-44f5-985c-82a6b9593e07" />
+
+# WARNING
+The jamming feature may be illegal in your country. Use it only in laboratory settings or with appropriate permission. The author is not responsible for any unauthorized use of the program or damage to your harware due to carelessness.
