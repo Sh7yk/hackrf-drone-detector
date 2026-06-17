@@ -25,7 +25,7 @@ sudo apt install -y portaudio19-dev
 sudo dnf install -y python3 python3-pip python3-tkinter python3-devel
 sudo dnf install -y hackrf hackrf-tools
 ```
-###Arch Linux
+### Arch Linux
 ```bash
 sudo pacman -S python python-pip tk
 sudo pacman -S hackrf
