@@ -515,7 +515,7 @@ class DroneDetectorGUI:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Drone Detector v6.0")
+        self.root.title("Drone Detector v0.5")
         self.root.minsize(1200, 750)
 
         self.core: DroneCore | None = None
