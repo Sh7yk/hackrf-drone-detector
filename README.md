@@ -6,12 +6,15 @@ The app is designed for drone signal detection, spectrum analysis, and experimen
 ## System Requirements
 Operating System: 
 - Linux (Ubuntu/Debian, Fedora, Arch, etc.) with Python 3.8+ support
+
 Hardware:
 - HackRF One for transmit/receive operation
 - Antenna
+
 Software Dependencies:
 - Python3.8+ with pip
 - hackrf-tools
+
 Libraries:
 - numpy, matplotlib, tkinter, pygame, requests, smtplib
 ___
