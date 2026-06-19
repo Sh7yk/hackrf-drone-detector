@@ -30,10 +30,10 @@ except ImportError:
 # --------------------- Constants ---------------------
 DEFAULT_FREQUENCIES = [433e6, 868e6, 915e6, 2400e6, 5800e6]
 DEFAULT_BANDWIDTHS = {
-    433e6: 8e6,
-    868e6: 8e6,
-    915e6: 8e6,
-    2400e6: 8e6,
+    433e6: 2e6,
+    868e6: 7e6,
+    915e6: 20e6,
+    2400e6: 20e6,
     5800e6: 20e6,
 }
 DEFAULT_THRESHOLDS = {433e6: -25, 868e6: -22, 915e6: -20, 2400e6: -18, 5800e6: -20}
