@@ -133,6 +133,11 @@ class DroneCore:
         self._noise_generated = False
         self._current_noise_sr = None
 
+        # ---- Adaptive threshold calibration ----
+        self.calibration_samples = 20      # number of scans to collect noise
+        self.calibration_counter = 0
+        self.calibration_needed = True     # will be set True when adaptive enabled
+
     # ---------- Sound ----------
     def _init_sound(self):
         self.sound_enabled = False
@@ -417,6 +422,30 @@ class DroneCore:
     # ---------- Scanning ----------
     def scan_once(self):
         results = {}
+        # Check if adaptive threshold is enabled and calibration is needed
+        if self.adaptive_threshold_enabled and self.calibration_needed:
+            # During calibration, we collect noise but do NOT trigger alerts
+            for freq in self.frequencies:
+                rssi = self.get_rssi(freq)
+                self.history[freq].append(rssi)
+                self.noise_history[freq].append(rssi)
+                # Do not compute threshold, just store raw values
+                results[freq] = {
+                    "rssi": rssi,
+                    "threshold": self.freq_thresholds.get(freq, -20),
+                    "signature": None,
+                    "movement": None,
+                    "alert": False,
+                    "confidence": "CALIBRATION",
+                }
+            self.calibration_counter += 1
+            if self.calibration_counter >= self.calibration_samples:
+                self.calibration_needed = False
+                self.calibration_counter = 0
+                print("[ADAPT] Calibration complete, adaptive threshold active.")
+            return results
+
+        # Normal scanning (including adaptive after calibration)
         for freq in self.frequencies:
             rssi = self.get_rssi(freq)
             self.history[freq].append(rssi)
@@ -722,6 +751,19 @@ class DroneDetectorGUI:
             self.core.jamming_check_interval = float(self._jamming_check_interval_var.get())
         except ValueError:
             pass
+
+        # Reset calibration if adaptive mode is enabled
+        if self.core.adaptive_threshold_enabled:
+            # Clear old noise history to start fresh
+            for f in self.core.frequencies:
+                self.core.noise_history[f].clear()
+                self.core.noise_history[f].extend([-65] * 10)  # seed with some values
+            self.core.calibration_needed = True
+            self.core.calibration_counter = 0
+            self._log_append("Adaptive threshold enabled – starting calibration...", tag="calibration")
+        else:
+            self.core.calibration_needed = False
+
         self._rebuild_plots(freqs, thrs)
         self._rebuild_tree(freqs)
         self._log_append("Settings applied to core.", tag="info")
@@ -839,6 +881,7 @@ class DroneDetectorGUI:
         self._log.tag_config("track", foreground="#2980b9")
         self._log.tag_config("jamming", foreground="#d4a017")
         self._log.tag_config("info", foreground="#555")
+        self._log.tag_config("calibration", foreground="#8e44ad")
 
         right = tk.Frame(paned)
         paned.add(right)
@@ -859,7 +902,7 @@ class DroneDetectorGUI:
             ax = self._fig.add_subplot(gs[i])
             ax.set_title(f"{freq/1e6:.1f} MHz", fontsize=8, loc="left", pad=2)
             ax.set_ylim(-80, 0)
-            ax.set_xlim(0, PLOT_WINDOW)
+            ax.set_xlim(0, PLOT_WINDOW)            # Фиксируем ось X
             ax.set_ylabel("dB", fontsize=7)
             ax.tick_params(labelsize=7)
             ax.grid(True, alpha=0.3, linewidth=0.5)
@@ -939,17 +982,15 @@ class DroneDetectorGUI:
 
         # Функция обновления области прокрутки
         def _on_canvas_configure(event):
-            # Обновляем ширину внутреннего фрейма, чтобы он соответствовал ширине холста
             canvas.itemconfig(canvas.find_withtag("all")[0], width=event.width)
             canvas.configure(scrollregion=canvas.bbox("all"))
         canvas.bind("<Configure>", _on_canvas_configure)
 
         # ---- ВСЕ ВИДЖЕТЫ ТЕПЕРЬ СОЗДАЮТСЯ ВНУТРИ `inner` ----
-        # Заголовок
         tk.Label(inner, text="Frequencies, thresholds and bandwidths", font=("Arial", 12, "bold")).grid(
             row=0, column=0, columnspan=7, sticky=tk.W, pady=(0, 12))
 
-        headers = ["Frequency (Hz)", "On", "Threshold (dB)", "BW, MHz", ""]
+        headers = ["Frequency (Hz)", "On", "Threshold (dB)", "BW, MHz (2-20)", ""]
         for col, h in enumerate(headers):
             tk.Label(inner, text=h, font=("Arial", 9, "bold"), fg="#555").grid(
                 row=1, column=col, padx=8, pady=2, sticky=tk.W)
@@ -978,7 +1019,7 @@ class DroneDetectorGUI:
         tk.Entry(add_frame, textvariable=self._new_freq_var, width=14).pack(side=tk.LEFT, padx=4)
         tk.Label(add_frame, text="Threshold:").pack(side=tk.LEFT)
         tk.Entry(add_frame, textvariable=self._new_thr_var, width=8).pack(side=tk.LEFT, padx=4)
-        tk.Label(add_frame, text="BW (MHz):").pack(side=tk.LEFT)
+        tk.Label(add_frame, text="BW (MHz, 2-20):").pack(side=tk.LEFT)
         tk.Entry(add_frame, textvariable=self._new_bw_var, width=8).pack(side=tk.LEFT, padx=4)
         tk.Button(add_frame, text="+ Add", command=self._add_frequency).pack(side=tk.LEFT, padx=8)
 
@@ -1121,7 +1162,6 @@ class DroneDetectorGUI:
                   font=("Arial", 10, "bold"), padx=12, pady=4).grid(
             row=row_apply, column=0, columnspan=7, pady=16, sticky=tk.W)
 
-        # Обновляем область прокрутки после создания всех виджетов
         inner.update_idletasks()
         canvas.configure(scrollregion=canvas.bbox("all"))
 
@@ -1129,7 +1169,7 @@ class DroneDetectorGUI:
         if self.core:
             self.core.set_volume(self._volume_value.get())
 
-    # ---------- Add/Remove Frequencies ----------
+    # ---------- Add/Remove Frequencies with BW validation ----------
     def _add_frequency(self):
         try:
             f = float(self._new_freq_var.get())
@@ -1137,6 +1177,9 @@ class DroneDetectorGUI:
             bw = float(self._new_bw_var.get())
         except ValueError:
             messagebox.showerror("Error", "Enter valid numbers")
+            return
+        if bw < 2.0 or bw > 20.0:
+            messagebox.showerror("Error", "Bandwidth must be between 2 and 20 MHz")
             return
         for fvar in self._freq_vars:
             if abs(float(fvar.get()) - f) < 1e-3:
@@ -1176,7 +1219,7 @@ class DroneDetectorGUI:
     def _refresh_settings_tab(self):
         self._build_settings_tab(self._settings_container)
 
-    # ---------- Apply Settings ----------
+    # ---------- Apply Settings with BW validation and calibration reset ----------
     def _apply_settings(self, silent=False):
         if self.running and not silent:
             messagebox.showwarning("Warning", "Stop scanning before changing settings.")
@@ -1195,6 +1238,10 @@ class DroneDetectorGUI:
             except ValueError:
                 if not silent:
                     messagebox.showerror("Error", f"Row {i+1}: invalid format")
+                return
+            if bw_mhz < 2.0 or bw_mhz > 20.0:
+                if not silent:
+                    messagebox.showerror("Error", f"Row {i+1}: bandwidth must be between 2 and 20 MHz")
                 return
             freqs.append(f)
             thrs[f] = t
@@ -1267,7 +1314,7 @@ class DroneDetectorGUI:
             self.core.detection_counts = {f: 0 for f in freqs}
             self.core.noise_history = {f: deque(maxlen=100) for f in freqs}
             for f in freqs:
-                self.core.noise_history[f].extend([-65] * 50)
+                self.core.noise_history[f].extend([-65] * 10)
 
         self.core.detection_cooldown = cd
         self.core.adaptive_threshold_enabled = adaptive_en
@@ -1295,6 +1342,17 @@ class DroneDetectorGUI:
         self.core.jamming_duration = jamming_duration
         self.core.jamming_check_interval = jamming_check
 
+        # Reset calibration if adaptive mode is enabled
+        if self.core.adaptive_threshold_enabled:
+            for f in self.core.frequencies:
+                self.core.noise_history[f].clear()
+                self.core.noise_history[f].extend([-65] * 10)
+            self.core.calibration_needed = True
+            self.core.calibration_counter = 0
+            self._log_append("Adaptive threshold enabled – starting calibration...", tag="calibration")
+        else:
+            self.core.calibration_needed = False
+
         self._rebuild_plots(freqs, thrs)
         self._rebuild_tree(freqs)
         self._log_append("Settings applied." if not silent else "Settings loaded.", tag="info")
@@ -1314,7 +1372,7 @@ class DroneDetectorGUI:
             ax = self._fig.add_subplot(gs[i])
             ax.set_title(f"{freq/1e6:.3f} MHz", fontsize=8, loc="left", pad=2)
             ax.set_ylim(-80, 0)
-            ax.set_xlim(0, PLOT_WINDOW)
+            ax.set_xlim(0, PLOT_WINDOW)   # фиксированный диапазон
             ax.set_ylabel("dB", fontsize=7)
             ax.tick_params(labelsize=7)
             ax.grid(True, alpha=0.3, linewidth=0.5)
@@ -1427,27 +1485,28 @@ class DroneDetectorGUI:
             else:
                 data = core.scan_once()
                 now = time.time()
-                for freq, info in data.items():
-                    if info["alert"] and now - core.last_alert > core.detection_cooldown:
-                        core.detection_counts[freq] += 1
-                        core.play_alert()
-                        core.last_alert = now
-                        core.send_email_alert(freq, info["rssi"])
-                        core.send_telegram_alert(freq, info["rssi"])
-                        mov = info["movement"]
-                        if mov and mov["trend"] > core.trend_sensitivity:
-                            core.tracking_mode = True
-                            core.tracked_frequency = freq
-                            core.track_start_time = time.time()
-                            core.track_rssi_history.clear()
-                            core._build_tracking_sound()
-                        elif info["signature"] and info["signature"]["is_drone_like"]:
-                            core.tracking_mode = True
-                            core.tracked_frequency = freq
-                            core.track_start_time = time.time()
-                            core.track_rssi_history.clear()
-                            core._build_tracking_sound()
-                        break
+                if not (core.adaptive_threshold_enabled and core.calibration_needed):
+                    for freq, info in data.items():
+                        if info["alert"] and now - core.last_alert > core.detection_cooldown:
+                            core.detection_counts[freq] += 1
+                            core.play_alert()
+                            core.last_alert = now
+                            core.send_email_alert(freq, info["rssi"])
+                            core.send_telegram_alert(freq, info["rssi"])
+                            mov = info["movement"]
+                            if mov and mov["trend"] > core.trend_sensitivity:
+                                core.tracking_mode = True
+                                core.tracked_frequency = freq
+                                core.track_start_time = time.time()
+                                core.track_rssi_history.clear()
+                                core._build_tracking_sound()
+                            elif info["signature"] and info["signature"]["is_drone_like"]:
+                                core.tracking_mode = True
+                                core.tracked_frequency = freq
+                                core.track_start_time = time.time()
+                                core.track_rssi_history.clear()
+                                core._build_tracking_sound()
+                            break
                 payload = {"mode": "scan", "data": data}
 
             with self._lock:
@@ -1474,6 +1533,24 @@ class DroneDetectorGUI:
         self._mode_var.set("")
         self._status_var.set("Scanning...")
 
+        # Если идёт калибровка – отображаем прогресс
+        if core.adaptive_threshold_enabled and core.calibration_needed:
+            self._status_var.set(f"Calibrating... ({core.calibration_counter}/{core.calibration_samples})")
+            for freq in core.frequencies:
+                try:
+                    self._tree.item(str(freq), values=(
+                        f"{freq/1e6:.3f}", "—", "—", "CALIB"
+                    ), tags=("ok",))
+                except tk.TclError:
+                    pass
+            # Не обновляем графики и не рисуем линии во время калибровки
+            try:
+                self._canvas.draw_idle()
+            except Exception:
+                pass
+            return
+
+        # Обычный режим (после калибровки или без адаптивного порога)
         for i, freq in enumerate(core.frequencies):
             info = data.get(freq)
             if info is None:
@@ -1493,11 +1570,15 @@ class DroneDetectorGUI:
                 pass
 
             hist = list(core.history[freq])
+            # Оставляем только последние PLOT_WINDOW значений
             y = hist[-PLOT_WINDOW:] if len(hist) >= PLOT_WINDOW else hist
+            # Если данных меньше PLOT_WINDOW, дополняем слева пустотой для корректного отображения
+            if len(y) < PLOT_WINDOW:
+                y = list(y) + [None] * (PLOT_WINDOW - len(y))
             x = list(range(len(y)))
             if i < len(self._lines):
                 self._lines[i].set_data(x, y)
-                self._axes[i].set_xlim(0, max(PLOT_WINDOW, len(y)))
+                # Не меняем xlim – он уже установлен в (0, PLOT_WINDOW)
                 self._threshold_lines[i].set_ydata([thr, thr])
 
             if alert:
@@ -1552,8 +1633,10 @@ class DroneDetectorGUI:
         if 0 <= idx < len(self._lines):
             hist = list(core.history[freq])
             y = hist[-PLOT_WINDOW:] if len(hist) >= PLOT_WINDOW else hist
+            if len(y) < PLOT_WINDOW:
+                y = list(y) + [None] * (PLOT_WINDOW - len(y))
             self._lines[idx].set_data(range(len(y)), y)
-            self._axes[idx].set_xlim(0, max(PLOT_WINDOW, len(y)))
+            # xlim не меняем
             try:
                 self._canvas.draw_idle()
             except Exception:
